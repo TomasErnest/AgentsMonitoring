@@ -21,7 +21,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, db, detect, keepalive, probe
+from . import config, db, detect, keepalive, probe, usage
 
 
 def password_hash(password: str) -> str:
@@ -77,9 +77,10 @@ PAGE = r"""<!DOCTYPE html><html lang="en"><head>
           <th class="text-left font-medium px-2 py-2">Session ID / Port</th>
           <th class="text-left font-medium px-2 py-2">Started</th>
           <th class="text-left font-medium px-2 py-2">Status</th>
+          <th class="text-left font-medium px-2 py-2">Usage</th>
           <th class="text-right font-medium px-2 py-2"></th>
         </tr></thead>
-        <tbody id="agents-rows"><tr><td colspan="6" class="px-3 py-3 text-slate-400">loading…</td></tr></tbody>
+        <tbody id="agents-rows"><tr><td colspan="7" class="px-3 py-3 text-slate-400">loading…</td></tr></tbody>
       </table>
     </div>
     <p class="text-[11px] text-slate-400 mt-2">tmux sessions running an agent, linked by their <code>--resume</code> session id</p>
@@ -195,6 +196,29 @@ function renderService(root, s){
   }
   renderTimeline(root, s.timeline, s.timeline_days);
 }
+// Usage cell: one mini bar per limit window (5h, 7d), coloured by how much is spent; the reset
+// time sits next to it. A window whose reset has already passed is shown as stale (grey).
+function fmtReset(u){if(!u)return "";const d=new Date(u*1000),now=new Date();
+  const hm=d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  return d.toDateString()===now.toDateString()?hm:d.toLocaleDateString([], {weekday:"short"})+" "+hm;}
+function usageCell(u){
+  if(!u||!u.windows||!u.windows.length) return `<span class="text-xs text-slate-300">–</span>`;
+  const now=Date.now()/1000;
+  const rows=u.windows.map(w=>{
+    const stale=w.resets_at&&w.resets_at<now;
+    const pct=stale?0:Math.min(100,Math.max(0,w.used_pct));
+    const bar=stale?"bg-slate-300":pct>=90?"bg-rose-500":pct>=70?"bg-amber-500":"bg-emerald-500";
+    const txt=stale?"reset":pct+" %";
+    const tip=`${w.label} window: ${stale?"reset since last reading":pct+" % used"}${w.resets_at?" · resets "+fmtTime(w.resets_at):""}`;
+    return `<div class="flex items-center gap-1.5 whitespace-nowrap text-xs" title="${esc(tip)}">`+
+      `<span class="w-5 text-slate-400">${esc(w.label)}</span>`+
+      `<span class="inline-block w-14 h-1.5 rounded bg-slate-100 overflow-hidden"><span class="block h-full ${bar}" style="width:${pct}%"></span></span>`+
+      `<span class="w-9 text-right text-slate-600">${txt}</span>`+
+      `<span class="text-slate-400">${stale?"":"↻ "+esc(fmtReset(w.resets_at))}</span></div>`;
+  }).join("");
+  const asOf=u.as_of?`${u.source||""} · as of ${fmtTime(u.as_of)}`:(u.source||"");
+  return `<div title="${esc(asOf)}">${rows}</div>`;
+}
 function renderAgents(root, agents){
   const tb=document.getElementById("agents-rows");
   const on=agents.some(a=>a.alive); const running=agents.filter(a=>a.alive).length;
@@ -203,7 +227,7 @@ function renderAgents(root, agents){
   const cnt=q(root,".agents-count");
   cnt.textContent=running?`${running} agent${running===1?"":"s"} running`:"no agents running";
   cnt.className="agents-count ml-auto text-sm font-medium "+(running?"text-emerald-600":"text-slate-400");
-  if(!agents.length){tb.innerHTML=`<tr><td colspan="6" class="px-3 py-3 text-slate-400">No tmux sessions found.</td></tr>`;return;}
+  if(!agents.length){tb.innerHTML=`<tr><td colspan="7" class="px-3 py-3 text-slate-400">No tmux sessions found.</td></tr>`;return;}
   tb.innerHTML="";
   agents.forEach(a=>{
     const tcls=VENDOR[a.vendor]||"bg-slate-100 text-slate-600";
@@ -240,6 +264,7 @@ function renderAgents(root, agents){
       `<td class="px-2 py-1.5">${sid}</td>`+
       `<td class="px-2 py-1.5 text-slate-500 text-xs whitespace-nowrap">${a.age!=null?"ago "+fmtDuration(a.age):"–"}</td>`+
       `<td class="px-2 py-1.5"><span class="inline-flex items-center gap-1.5 whitespace-nowrap ${stCls}"><span class="h-2 w-2 rounded-full ${dot} shrink-0"></span>${statusTxt}</span></td>`+
+      `<td class="px-2 py-1.5">${usageCell(a.usage)}</td>`+
       // Per-row actions: ↻ restart, ✕ stop. Small icons at the very end of the row.
       `<td class="px-2 py-1.5 text-right whitespace-nowrap">`+
         `<button class="agent-act inline-flex align-middle p-1 rounded text-slate-400 hover:text-sky-600 hover:bg-slate-100" data-act="restart" data-name="${esc(a.name)}" title="Restart ${esc(a.name)}">`+
@@ -403,6 +428,9 @@ def _agents_state(cfg: dict) -> list[dict]:
             url, uname = _tg_link(bot)
             a["telegram_bot"] = uname
             a["telegram_url"] = url
+    # Plan usage (5h / weekly window) per vendor — every agent of one vendor shares the account.
+    for a in agents:
+        a["usage"] = usage.for_vendor(a.get("vendor"))
     return agents
 
 

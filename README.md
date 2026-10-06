@@ -166,6 +166,21 @@ hash (`dashboard.auth.pwhash`), never in plaintext. Remove the `auth` block to t
   same name written by hand in `services[]` wins. The folder is yours — nothing in it is part of
   this repo, so private checks stay private while the dashboard itself keeps updating from git.
 
+- **Usage column (plan limits)** — the agents table shows, per agent, how much of the plan's
+  rolling **5-hour** and **weekly** limit is spent and when each window resets (bar turns amber
+  at 70 %, red at 90 %; grey "reset" once the last reading is past its reset time). Agents of
+  one vendor share the account, so they show the same numbers. Sources, both optional:
+  - **Claude (`vendor: anthropic`)** — Claude Code passes `rate_limits` to its status line.
+    Install [`contrib/claude-statusline-usage.sh`](contrib/claude-statusline-usage.sh) as your
+    `statusLine` command (instructions inside); it saves that JSON to
+    `<state dir>/usage/claude-status.json`. Fresh as long as some Claude Code session is open.
+  - **Codex / ChatGPT plan (`vendor: openai`)** — asked live (cached 60 s) from ChatGPT's usage
+    endpoint with the token Codex already keeps in `~/.codex/auth.json` (sent only to
+    `chatgpt.com`). It is the endpoint Codex itself uses, but undocumented — if it fails, the
+    last `rate_limits` snapshot from the newest Codex session log is shown instead. Anything
+    signed in with the same ChatGPT plan (e.g. Hermes via `openai-codex`) shares this limit;
+    give it `"vendor": "openai"` in `pinned_daemons[]` to show it there too.
+
 - **probe.min_outage_samples** — how many consecutive failed probes count as a real outage for
   the **Uptime** metric (default 3); isolated transient blips don't reset uptime (SLA still
   counts them).
